@@ -33,27 +33,29 @@ from mathutils import Vector, Euler
 # =============================================================================
 
 def clear_scene():
-    """Remove all existing objects and data from the scene."""
-    bpy.ops.object.select_all(action='SELECT')
-    bpy.ops.object.delete(use_global=False)
-    
-    # Clear orphan data
-    for block in bpy.data.meshes:
-        if block.users == 0:
-            bpy.data.meshes.remove(block)
-    for block in bpy.data.materials:
-        if block.users == 0:
-            bpy.data.materials.remove(block)
-    for block in bpy.data.lights:
-        if block.users == 0:
-            bpy.data.lights.remove(block)
-    for block in bpy.data.cameras:
-        if block.users == 0:
-            bpy.data.cameras.remove(block)
+    """Remove existing objects and unused data safely, including on repeated runs."""
+    # Remove objects directly instead of relying on selection/context operators.
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+    # Remove orphaned datablocks.
+    datablock_groups = (
+        bpy.data.meshes,
+        bpy.data.curves,
+        bpy.data.materials,
+        bpy.data.cameras,
+        bpy.data.lights,
+        bpy.data.armatures,
+        bpy.data.actions,
+    )
+    for group in datablock_groups:
+        for block in list(group):
+            if block.users == 0:
+                group.remove(block)
 
 
 def setup_render_settings():
-    """Configure render resolution, frame rate, and frame range."""
+    """Configure render settings with Blender 4.x/5.x engine compatibility."""
     scene = bpy.context.scene
     scene.render.resolution_x = 1080
     scene.render.resolution_y = 1920
@@ -61,17 +63,32 @@ def setup_render_settings():
     scene.render.fps = 30
     scene.frame_start = 1
     scene.frame_end = 1800
-    
-    # Use EEVEE for fast rendering
-    scene.render.engine = 'BLENDER_EEVEE_NEXT'
-    
-    # Color management - bright and warm
+
+    # Blender 5.0+ uses BLENDER_EEVEE; Blender 4.2-4.4 used
+    # BLENDER_EEVEE_NEXT. Detect the engine identifiers available here.
+    available_engines = {
+        item.identifier
+        for item in bpy.types.RenderSettings.bl_rna.properties['engine'].enum_items
+    }
+    if 'BLENDER_EEVEE' in available_engines:
+        scene.render.engine = 'BLENDER_EEVEE'
+    elif 'BLENDER_EEVEE_NEXT' in available_engines:
+        scene.render.engine = 'BLENDER_EEVEE_NEXT'
+    else:
+        scene.render.engine = 'CYCLES'
+        print("Warning: EEVEE is unavailable; using Cycles.")
+
+    # Color management - bright and warm.
     scene.view_settings.view_transform = 'Standard'
-    scene.view_settings.look = 'None'
+    try:
+        scene.view_settings.look = 'None'
+    except (TypeError, ValueError):
+        # Some view transforms do not expose a compatible 'None' look.
+        pass
     scene.view_settings.exposure = 0.0
     scene.view_settings.gamma = 1.0
-    
-    # Output settings
+
+    # Output settings.
     scene.render.image_settings.file_format = 'PNG'
     scene.render.image_settings.color_mode = 'RGB'
     scene.render.film_transparent = False
@@ -952,7 +969,17 @@ def main():
     # Step 6: Create lighting
     print("[6/12] Creating lighting...")
     create_lighting(collections)
-    
+
+    # Optional EEVEE quality settings; guard properties that differ by version.
+    try:
+        eevee = bpy.context.scene.eevee
+        if hasattr(eevee, 'taa_render_samples'):
+            eevee.taa_render_samples = 64
+        if hasattr(eevee, 'use_raytracing'):
+            eevee.use_raytracing = True
+    except (AttributeError, TypeError, RuntimeError):
+        pass
+
     # Step 7: Create environment
     print("[7/12] Creating environment...")
     ground = create_environment(collections, mats)
