@@ -305,9 +305,9 @@ def create_plane(name, size, location, material, collection, rotation=(0,0,0)):
     return obj
 
 
-def set_animation_keyframe(obj, frame, location=None, rotation=None, scale=None, 
+def set_animation_keyframe(obj, frame, location=None, rotation=None, scale=None,
                            interpolation='BEZIER'):
-    """Set keyframes with smooth interpolation."""
+    """Set keyframes with smooth interpolation. Compatible with Blender 4.x & 5.x."""
     if location is not None:
         obj.location = location
         obj.keyframe_insert(data_path='location', frame=frame)
@@ -317,13 +317,11 @@ def set_animation_keyframe(obj, frame, location=None, rotation=None, scale=None,
     if scale is not None:
         obj.scale = scale
         obj.keyframe_insert(data_path='scale', frame=frame)
-    
-    # Set interpolation for smooth motion
-    if obj.animation_data and obj.animation_data.action:
-        for fcurve in obj.animation_data.action.fcurves:
-            for kp in fcurve.keyframe_points:
-                kp.interpolation = interpolation
-                kp.easing = 'AUTO'
+
+    for fc in _iter_fcurves(obj):
+        for kp in fc.keyframe_points:
+            kp.interpolation = interpolation
+            kp.easing = 'AUTO'
 
 
 def animate_fade_in(obj, start_frame, end_frame):
@@ -344,13 +342,54 @@ def animate_fade_out(obj, start_frame, end_frame):
     _smooth_fcurves(obj)
 
 
+def _iter_fcurves(obj):
+    """Yield action F-Curves using legacy or layered Action APIs."""
+    ad = obj.animation_data
+    if not ad or not ad.action:
+        return
+    action = ad.action
+
+    # Blender 4.4+ layered actions.
+    if hasattr(action, "layers"):
+        yielded = False
+        for layer in action.layers:
+            for strip in layer.strips:
+                # Prefer the documented per-slot channelbag accessor.
+                slots = getattr(action, "slots", ())
+                active_slot = getattr(ad, "action_slot", None)
+                candidate_slots = [active_slot] if active_slot else list(slots)
+                for slot in candidate_slots:
+                    try:
+                        cb = strip.channelbag(slot)
+                    except (AttributeError, TypeError, RuntimeError):
+                        cb = None
+                    if cb:
+                        for fc in cb.fcurves:
+                            yielded = True
+                            yield fc
+                # Compatibility with builds exposing channelbags directly.
+                if not yielded:
+                    for cb in getattr(strip, "channelbags", ()):
+                        for fc in cb.fcurves:
+                            yielded = True
+                            yield fc
+        if not yielded and hasattr(action, "fcurves"):
+            for fc in action.fcurves:
+                yield fc
+        return
+
+    # Blender <= 4.3 legacy actions.
+    if hasattr(action, "fcurves"):
+        for fc in action.fcurves:
+            yield fc
+
+
 def _smooth_fcurves(obj):
-    """Apply bezier interpolation to all fcurves."""
-    if obj.animation_data and obj.animation_data.action:
-        for fcurve in obj.animation_data.action.fcurves:
-            for kp in fcurve.keyframe_points:
-                kp.interpolation = 'BEZIER'
-                kp.easing = 'AUTO'
+    """Apply bezier interpolation to all keyframes on the object."""
+    for fc in _iter_fcurves(obj):
+        for kp in fc.keyframe_points:
+            kp.interpolation = 'BEZIER'
+            kp.easing = 'AUTO'
 
 # =============================================================================
 # SECTION 4: ENVIRONMENT
